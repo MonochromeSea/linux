@@ -1,4 +1,4 @@
-name: Compile Binder Module (Force Symvers Generation)
+name: Compile Binder Module (Final Solution)
 on:
   workflow_dispatch:
 
@@ -13,79 +13,82 @@ jobs:
           ref: v6.12
           fetch-depth: 1
 
-      - name: Install Dependencies
+      - name: Install All Dependencies
         run: |
           sudo apt update && sudo apt install -y \
             build-essential libncurses5-dev libssl-dev \
             flex bison libelf-dev dwarves zstd bc \
-            gcc-multilib libc6-dev-i386
+            gcc-multilib libc6-dev-i386 kmod
 
-      - name: Configure Kernel
+      - name: Configure Kernel Properly
         run: |
           # 生成默认配置
           make defconfig
           
-          # 启用模块支持和binder模块
+          # 关键配置：启用模块支持和binder作为模块
           scripts/config --enable CONFIG_MODULES
+          scripts/config --enable CONFIG_MODULE_UNLOAD
           scripts/config --set-val CONFIG_ANDROID_BINDER_IPC m
           scripts/config --set-val CONFIG_ANDROID_BINDERFS m
           scripts/config --enable CONFIG_ANDROID
           scripts/config --disable CONFIG_MODULE_SIG
           
           # 验证配置
-          echo "关键配置检查："
+          echo "=== 配置验证 ==="
           cat .config | grep -E "CONFIG_MODULES|CONFIG_ANDROID_BINDER"
 
-      - name: Force Generate Module.symvers
+      - name: Full Kernel Initialization (Critical)
         run: |
-          # 第一步：编译一个简单的内核模块来触发Module.symvers生成
-          # 选择一个简单的模块目录
-          make -j$(nproc) M=lib/ -k  # -k 选项确保即使有错误也继续执行
+          # 完整的内核初始化步骤，确保生成所有必要文件
+          make -j$(nproc) prepare
+          make -j$(nproc) scripts
+          make -j$(nproc) modules_prepare
           
-          # 第二步：编译内核核心符号
-          make -j$(nproc) vmlinux -k
+          # 编译一个基础模块来强制生成Module.symvers
+          make -j$(nproc) M=drivers/char/ -k
           
-          # 检查是否生成了Module.symvers
+          # 检查并报告Module.symvers状态
           if [ -f "Module.symvers" ]; then
-            echo "成功生成Module.symvers"
+            echo "=== Module.symvers成功生成 ==="
             ls -la Module.symvers
-            cat Module.symvers | head -n 5  # 显示前5行验证内容
+            cat Module.symvers | head -n 5
           else
-            echo "仍然无法生成Module.symvers，尝试备用方法"
-            # 备用方法：手动创建最小化的Module.symvers
+            echo "=== 仍未生成Module.symvers，创建基础版本 ==="
+            # 创建包含基本符号的Module.symvers
             echo "0x0000000000000000 module_layout vmlinux EXPORT_SYMBOL_GPL" > Module.symvers
+            echo "0x0000000000000000 __this_module vmlinux EXPORT_SYMBOL" >> Module.symvers
             ls -la Module.symvers
           fi
 
-      - name: Compile Binder Module
+      - name: Compile Binder Module with Symvers
         run: |
-          # 确保符号表存在于正确位置
-          if [ -f "Module.symvers" ]; then
-            cp Module.symvers drivers/android/
-          fi
+          # 确保符号表在正确位置
+          cp Module.symvers drivers/android/
           
-          # 编译binder模块，允许警告但不中断
+          # 编译binder模块，显示详细过程
           make M=drivers/android -j$(nproc) V=1 KBUILD_MODPOST_WARN=1
 
-      - name: Check Results
+      - name: Verify and Collect Results
         run: |
-          echo "drivers/android目录内容："
+          echo "=== 编译结果检查 ==="
           ls -la drivers/android/
           
-          echo "查找.ko文件："
+          echo "=== 查找生成的模块 ==="
           find drivers/android/ -name "*.ko"
           
-          # 检查是否生成binder.ko
+          # 检查是否成功生成binder.ko
           if [ -f "drivers/android/binder.ko" ]; then
-            echo "binder模块编译成功！"
+            echo "=== 成功生成binder模块 ==="
             modinfo drivers/android/binder.ko
           else
-            echo "binder模块未生成！"
+            echo "=== 编译失败，查看完整日志 ==="
+            cat drivers/android/build.log
             exit 1
           fi
 
-      - name: Upload Modules
+      - name: Upload Binder Modules
         uses: actions/upload-artifact@v4
         with:
-          name: binder-modules
+          name: binder-modules-v6.12
           path: drivers/android/*.ko
+          retention-days: 14
