@@ -2,78 +2,75 @@ name: Build Binder Driver
 on: [workflow_dispatch]
 jobs:
   build:
-    runs-on: ubuntu-22.04  # 使用更稳定的Ubuntu版本
+    runs-on: ubuntu-22.04  # 稳定版本，避免兼容性问题
     steps:
-      - name: System info
-        run: |
-          uname -a
-          lsb_release -a
-      
-      - name: Install dependencies
+      - name: Install core dependencies
         run: |
           sudo apt update -y
           sudo apt install -y \
-            build-essential \
-            gcc \
-            make \
-            libncurses5-dev \
-            flex \
-            bison \
-            openssl \
-            libssl-dev \
-            libelf-dev \
-            bc \
-            git \
-            libzstd-dev
-      
-      - name: Clone kernel source
+            build-essential gcc make libncurses5-dev \
+            flex bison openssl libssl-dev libelf-dev \
+            bc git libzstd-dev dwarves
+
+      - name: Clone Linux kernel v6.12
         run: |
           git clone --depth 1 --branch v6.12 https://github.com/torvalds/linux.git
           cd linux
-          ls -l drivers/android/
-      
-      - name: Configure kernel
-        run: |
-          cd linux
-          # 生成默认配置
-          make defconfig
-          
-          # 添加所有必要的Binder配置
-          echo "CONFIG_ANDROID_BINDER_IPC=m" >> .config
-          echo "CONFIG_ANDROID_BINDERFS=y" >> .config
-          echo "CONFIG_ANDROID_BINDER_DEVICES=\"binder,hwbinder,vndbinder\"" >> .config  # 新增这一行
-          echo "CONFIG_PROC_FS=y" >> .config
-          echo "CONFIG_SYSFS=y" >> .config
-          echo "CONFIG_MMU=y" >> .config
-          
-          # 验证所有配置项
-          grep -E "CONFIG_ANDROID_BINDER|CONFIG_PROC_FS|CONFIG_SYSFS|CONFIG_MMU" .config
-          
-          # 准备模块编译环境
-          make modules_prepare V=1
-      
-      - name: Build driver
-        run: |
-          cd linux
-          # 编译Binder驱动
-          make drivers/android/binder.ko V=1 -j$(nproc)
-      
-      - name: Check build result
-        run: |
-          if [ -f "linux/drivers/android/binder.ko" ]; then
-            echo "Build successful"
-            ls -l linux/drivers/android/binder.ko
-            modinfo linux/drivers/android/binder.ko || true
-          else
-            echo "Build failed - binder.ko not found"
+          # 验证Binder源码存在
+          if [ ! -f "drivers/android/binder.c" ]; then
+            echo "Error: binder.c not found!"
             exit 1
           fi
-      
-      - name: Upload artifact
+
+      - name: Configure kernel (ensure Binder params生效)
+        run: |
+          cd linux
+          # 1. 生成默认配置（基础配置模板）
+          make defconfig
+          
+          # 2. 使用内核原生工具设置配置，避免语法问题
+          # 关键：--set-str 用于字符串类型配置，确保参数被正确解析
+          scripts/config --set-str CONFIG_ANDROID_BINDER_DEVICES "binder,hwbinder,vndbinder"
+          scripts/config --enable CONFIG_ANDROID_BINDER_IPC  # 启用Binder IPC
+          scripts/config --set-val CONFIG_ANDROID_BINDER_IPC m  # 编译为模块
+          scripts/config --enable CONFIG_ANDROID_BINDERFS  # 启用BinderFS支持
+          
+          # 3. 验证配置是否真正生效（关键检查步骤）
+          echo "=== 验证配置结果 ==="
+          if grep -q "CONFIG_ANDROID_BINDER_DEVICES" .config; then
+            grep "CONFIG_ANDROID_BINDER_DEVICES" .config
+          else
+            echo "Error: CONFIG_ANDROID_BINDER_DEVICES 未生效！"
+            exit 1
+          fi
+          grep -E "CONFIG_ANDROID_BINDER_IPC|CONFIG_ANDROID_BINDERFS" .config
+          
+          # 4. 准备模块编译环境（生成符号表、依赖文件）
+          make modules_prepare V=1
+
+      - name: Build Binder driver (详细日志)
+        run: |
+          cd linux
+          # 启用详细编译日志，便于定位问题
+          make drivers/android/binder.ko V=1 -j$(nproc)
+
+      - name: Verify build result
+        run: |
+          cd linux
+          if [ -f "drivers/android/binder.ko" ]; then
+            echo "=== 编译成功 ==="
+            ls -l drivers/android/binder.ko
+            # 显示模块信息（验证模块有效性）
+            modinfo drivers/android/binder.ko || true
+          else
+            echo "=== 编译失败：binder.ko未生成 ==="
+            exit 1
+          fi
+
+      - name: Upload compiled module
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: binder-module
+          name: binder-ko-v6.12-x86_64
           path: linux/drivers/android/binder.ko
-          retention-days: 7
-    
+          retention-days: 14  # 延长保留时间，方便下载
