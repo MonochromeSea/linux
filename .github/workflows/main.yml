@@ -1,65 +1,65 @@
-name: Build Binder Driver (v6.12)
-on: [workflow_dispatch]
+name: Compile Binder Module
+
+on:
+  push:
+    paths:
+      - 'drivers/android/**'
+      - '.github/workflows/compile-binder.yml'
+  pull_request:
+    paths:
+      - 'drivers/android/**'
+  workflow_dispatch:  # 允许手动触发
+
 jobs:
-  build:
-    runs-on: ubuntu-22.04
+  compile:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        kernel_version: ['6.12']  # 可以添加多个版本
+
     steps:
-      - name: Install full dependencies (for kernel + module build)
-        run: |
-          sudo apt update -y
-          sudo apt install -y \
-            build-essential gcc make libncurses5-dev \
-            flex bison openssl libssl-dev libelf-dev \
-            bc git libzstd-dev dwarves pkg-config \
-            llvm clang lld
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          ref: v${{ matrix.kernel_version }}
+          fetch-depth: 1
 
-      - name: Clone Linux kernel v6.12 source
+      - name: Install dependencies
         run: |
-          git clone --depth 1 --branch v6.12 https://github.com/torvalds/linux.git
-          cd linux
-          if [ ! -f "drivers/android/binder.c" ]; then
-            echo "Fatal error: binder.c not found in kernel source!"
-            exit 1
-          fi
+          sudo apt-get update
+          sudo apt-get install -y build-essential libncurses5-dev \
+            libssl-dev flex bison libelf-dev dwarves zstd
 
-      - name: Prepare kernel module build environment (fixed)
+      - name: Prepare kernel configuration
         run: |
-          cd linux
+          # 使用默认配置
           make defconfig
-          # 关键修复：编译 vmlinux 强制生成 Module.symvers
-          make vmlinux -j$(nproc) V=1
-          make modules_prepare V=1
-          if [ ! -f "Module.symvers" ]; then
-            echo "Error: Module.symvers not generated (environment preparation failed)!"
-            exit 1
-          fi
-          ls -lh Module.symvers  # 调试用：确认文件存在
+          
+          # 启用 binder 相关配置
+          scripts/config --enable CONFIG_ANDROID
+          scripts/config --enable CONFIG_ANDROID_BINDER_IPC
+          scripts/config --enable CONFIG_ANDROID_BINDERFS
+          scripts/config --enable CONFIG_ANDROID_BINDER_IPC_SELFTEST
 
-      - name: Build Binder driver
+      - name: Build kernel modules
         run: |
-          cd linux
-          make drivers/android/binder.ko \
-            V=1 \
-            -j$(nproc) \
-            EXTRA_CFLAGS="-DCONFIG_ANDROID_BINDER_DEVICES=\"binder,hwbinder,vndbinder\"" \
-            EXTRA_CPPFLAGS="-DCONFIG_ANDROID_BINDER_IPC=1 -DCONFIG_ANDROID_BINDERFS=1"
+          # 编译 binder 相关模块
+          make M=drivers/android -j$(nproc)
 
-      - name: Verify build success
+      - name: Verify build output
         run: |
-          cd linux
-          if [ -f "drivers/android/binder.ko" ]; then
-            echo "Binder driver compiled successfully!"
-            ls -lh drivers/android/binder.ko
-            modinfo drivers/android/binder.ko
-          else
-            echo "Build failed: binder.ko not found!"
-            exit 1
-          fi
+          # 检查编译结果
+          ls -l drivers/android/*.ko
+          
+          # 输出模块信息
+          for ko in drivers/android/*.ko; do
+            modinfo $ko
+          done
 
-      - name: Upload compiled Binder module
-        if: success()
+      - name: Upload binder modules
         uses: actions/upload-artifact@v4
         with:
-          name: binder-module-v6.12-x86_64
-          path: linux/drivers/android/binder.ko
-          retention-days: 30
+          name: binder-modules-${{ matrix.kernel_version }}
+          path: |
+            drivers/android/*.ko
+          retention-days: 7
