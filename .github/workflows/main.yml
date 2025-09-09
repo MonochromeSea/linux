@@ -2,50 +2,34 @@ name: Build Binder Driver
 on: [workflow_dispatch]
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04  # 使用更稳定的Ubuntu版本
     steps:
       - name: System info
         run: |
           uname -a
           lsb_release -a
-          free -m
-          df -h
       
       - name: Install dependencies
         run: |
-          sudo apt update -y || echo "Update failed but continuing"
+          sudo apt update -y
           sudo apt install -y \
             build-essential \
             gcc \
-            g++ \
             make \
             libncurses5-dev \
-            libncursesw5-dev \
             flex \
             bison \
             openssl \
             libssl-dev \
             libelf-dev \
-            elfutils \
             bc \
             git \
-            gcc-multilib \
-            libc6-dev \
-            pkg-config \
-            libzstd-dev \
-            dwarves \
-            zstd
-          gcc --version
-          make --version
-          ld --version
+            libzstd-dev
       
       - name: Clone kernel source
         run: |
           git clone --depth 1 --branch v6.12 https://github.com/torvalds/linux.git
           cd linux
-          git status
-          git log -1
-          # 检查 binder 相关文件是否存在
           ls -l drivers/android/
       
       - name: Configure kernel
@@ -53,32 +37,32 @@ jobs:
           cd linux
           # 生成默认配置
           make defconfig
-          # 手动编辑配置文件，确保必要选项
+          
+          # 添加所有必要的Binder配置
           echo "CONFIG_ANDROID_BINDER_IPC=m" >> .config
           echo "CONFIG_ANDROID_BINDERFS=y" >> .config
+          echo "CONFIG_ANDROID_BINDER_DEVICES=\"binder,hwbinder,vndbinder\"" >> .config  # 新增这一行
           echo "CONFIG_PROC_FS=y" >> .config
           echo "CONFIG_SYSFS=y" >> .config
           echo "CONFIG_MMU=y" >> .config
-          # 验证配置
+          
+          # 验证所有配置项
           grep -E "CONFIG_ANDROID_BINDER|CONFIG_PROC_FS|CONFIG_SYSFS|CONFIG_MMU" .config
+          
           # 准备模块编译环境
           make modules_prepare V=1
       
-      - name: Build driver with debug
+      - name: Build driver
         run: |
           cd linux
-          # 单独编译 binder 驱动，启用详细输出
-          make -d drivers/android/binder.ko V=1 -j$(nproc) || \
-          (echo "Build failed, showing last 500 lines of output" && \
-           tail -n 500 Makefile && \
-           exit 1)
+          # 编译Binder驱动
+          make drivers/android/binder.ko V=1 -j$(nproc)
       
       - name: Check build result
         run: |
           if [ -f "linux/drivers/android/binder.ko" ]; then
             echo "Build successful"
             ls -l linux/drivers/android/binder.ko
-            # 检查模块信息
             modinfo linux/drivers/android/binder.ko || true
           else
             echo "Build failed - binder.ko not found"
