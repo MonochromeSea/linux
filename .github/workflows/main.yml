@@ -1,88 +1,80 @@
-name: Compile Binder Module (Working Version)
+name: Compile Binder Module (Final Working Version)
 on:
-  workflow_dispatch:  # 仅手动触发，避免误触发
+  workflow_dispatch:
+
 jobs:
-  compile-binder:
+  compile:
     runs-on: ubuntu-latest
     steps:
-      # 1. 拉取指定版本的内核源码（v6.12）
-      - name: Checkout Linux Kernel v6.12
+      - name: Checkout Linux 6.12
         uses: actions/checkout@v4
         with:
-          repository: torvalds/linux  # 直接拉取官方仓库，避免fork同步问题
-          ref: v6.12  # 固定内核版本，确保配置匹配
-          fetch-depth: 1  # 只拉取最新提交，加速下载
+          repository: torvalds/linux
+          ref: v6.12
+          fetch-depth: 1
 
-      # 2. 安装所有必需依赖（包括内核编译的基础工具）
-      - name: Install Dependencies
+      - name: Install Complete Dependencies
         run: |
           sudo apt update && sudo apt install -y \
             build-essential libncurses5-dev libssl-dev \
-            flex bison libelf-dev dwarves zstd bc gcc-multilib
+            flex bison libelf-dev dwarves zstd bc \
+            gcc-multilib libc6-dev-i386  # 增加32位兼容库
 
-      # 3. 关键：配置内核（强制启用模块+binder模块模式）
-      - name: Configure Kernel for Binder Module
+      - name: Force Module Configuration
         run: |
-          # 1. 生成默认配置（确保基础配置不缺失）
+          # 生成默认配置后，强制修改关键选项
           make defconfig
           
-          # 2. 强制开启模块支持（核心！没有则无.ko）
+          # 1. 强制开启模块支持（核心）
           scripts/config --enable CONFIG_MODULES
-          scripts/config --enable CONFIG_MODULE_UNLOAD  # 可选，支持模块卸载
+          scripts/config --enable CONFIG_MODULE_UNLOAD
+          scripts/config --enable CONFIG_MODVERSIONS  # 增加模块版本支持
           
-          # 3. 强制将binder配置为模块模式（m=生成.ko，y=编译进内核）
+          # 2. 强制binder驱动为模块模式（m）
           scripts/config --set-val CONFIG_ANDROID_BINDER_IPC m
-          scripts/config --set-val CONFIG_ANDROID_BINDERFS m  # binderfs也设为模块
-          scripts/config --enable CONFIG_ANDROID  # 依赖项
+          scripts/config --set-val CONFIG_ANDROID_BINDERFS m
+          scripts/config --enable CONFIG_ANDROID
           
-          # 4. 禁用模块签名（避免编译后签名验证失败，不影响.ko生成）
+          # 3. 禁用可能干扰的选项
           scripts/config --disable CONFIG_MODULE_SIG
+          scripts/config --disable CONFIG_STRICT_MODULE_RWX
           
-          # 5. 验证配置是否生效（打印关键配置，便于日志排查）
-          echo "=== 关键配置验证 ==="
+          # 4. 再次确认配置（确保修改生效）
+          echo "=== 最终配置验证 ==="
           cat .config | grep -E "CONFIG_MODULES|CONFIG_ANDROID_BINDER_IPC|CONFIG_ANDROID_BINDERFS"
 
-      # 4. 编译内核基础工具（生成modpost等模块编译必需工具）
-      - name: Build Kernel Tools & Prepare
+      - name: Build Kernel Core (Critical Step)
         run: |
-          # 编译模块编译依赖的工具链（scripts/mod/*）
-          make -j$(nproc) scripts
-          # 准备模块编译环境（生成Module.symvers等关键文件）
-          make -j$(nproc) modules_prepare
+          # 先编译内核核心部分（确保模块依赖的内核符号表生成）
+          make -j$(nproc) vmlinux  # 编译内核镜像，生成必要的符号表
+          make -j$(nproc) modules_prepare  # 准备模块编译环境
 
-      # 5. 编译binder模块（带详细日志，便于排查错误）
-      - name: Compile Binder Module (Verbose)
+      - name: Compile Binder Module with Full Log
         run: |
-          # M=drivers/android：指定仅编译binder所在目录
-          # V=1：显示详细编译日志，报错时能看到具体原因
-          # -j$(nproc)：用满CPU核心加速编译
-          make M=drivers/android -j$(nproc) V=1
+          # 编译时输出所有日志到文件，便于排查
+          make M=drivers/android -j$(nproc) V=1 > drivers/android/build.log 2>&1
 
-      # 6. 检查结果并上传（明确显示是否生成.ko）
-      - name: Verify & Upload Binder Module
+      - name: Check Compile Log for Errors
         run: |
-          echo "=== 查看drivers/android目录内容 ==="
-          ls -la drivers/android/  # 显示所有文件，确认.ko是否存在
+          echo "=== 编译日志最后200行 ==="
+          tail -n 200 drivers/android/build.log || true
+
+      - name: Verify Module Generation
+        run: |
+          echo "=== 查找所有.ko文件 ==="
+          find drivers/android/ -name "*.ko" -print0 | xargs -0 -I {} sh -c 'echo "找到模块: {}"; modinfo {}' || true
           
-          # 查找所有.ko文件并统计
-          KO_FILES=$(find drivers/android/ -name "*.ko")
-          if [ -n "$KO_FILES" ]; then
-            echo -e "\n=== 成功生成以下.ko模块 ==="
-            for ko in $KO_FILES; do
-              echo $ko
-              modinfo $ko | grep -E "filename|version|depends"  # 显示模块基本信息
-            done
+          # 检查是否生成了binder.ko
+          if [ -f "drivers/android/binder.ko" ]; then
+            echo "=== 成功生成binder模块 ==="
+            modinfo drivers/android/binder.ko
           else
-            echo -e "\n=== 未生成.ko模块！查看编译日志最后100行 ==="
-            tail -n 100 drivers/android/.build.log 2>/dev/null  # 打印错误日志
-            exit 1  # 失败退出，触发告警
+            echo "=== 仍然未生成.ko模块！ ==="
+            exit 1
           fi
 
-      # 7. 上传.ko文件（若生成）
-      - name: Upload .ko Artifact
-        if: success()  # 仅成功时上传
+      - name: Upload Modules
         uses: actions/upload-artifact@v4
         with:
-          name: binder-modules-v6.12
-          path: ${{ steps.verify.outputs.ko_files }}  # 上传所有找到的.ko
-          retention-days: 30  # 保留30天，方便下载
+          name: binder-modules-final
+          path: drivers/android/*.ko
