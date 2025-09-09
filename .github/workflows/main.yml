@@ -4,10 +4,16 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      - name: System info
+        run: |
+          uname -a
+          lsb_release -a
+          free -m
+          df -h
+      
       - name: Install dependencies
         run: |
-          sudo apt update -y
-          # 安装更完整的编译依赖
+          sudo apt update -y || echo "Update failed but continuing"
           sudo apt install -y \
             build-essential \
             gcc \
@@ -25,54 +31,62 @@ jobs:
             git \
             gcc-multilib \
             libc6-dev \
-            pkg-config
-          # 检查关键工具版本
+            pkg-config \
+            libzstd-dev \
+            dwarves \
+            zstd
           gcc --version
           make --version
+          ld --version
       
       - name: Clone kernel source
         run: |
           git clone --depth 1 --branch v6.12 https://github.com/torvalds/linux.git
           cd linux
-          # 显示当前分支信息
-          git branch
+          git status
+          git log -1
+          # 检查 binder 相关文件是否存在
+          ls -l drivers/android/
       
       - name: Configure kernel
         run: |
           cd linux
           # 生成默认配置
           make defconfig
-          # 确保配置工具可用
-          if [ ! -f "scripts/config" ]; then
-            echo "Error: scripts/config not found"
-            exit 1
-          fi
-          # 配置 Binder 驱动为模块
-          scripts/config --enable CONFIG_ANDROID_BINDER_IPC
-          scripts/config --set-val CONFIG_ANDROID_BINDER_IPC m
-          scripts/config --enable CONFIG_ANDROID_BINDERFS
+          # 手动编辑配置文件，确保必要选项
+          echo "CONFIG_ANDROID_BINDER_IPC=m" >> .config
+          echo "CONFIG_ANDROID_BINDERFS=y" >> .config
+          echo "CONFIG_PROC_FS=y" >> .config
+          echo "CONFIG_SYSFS=y" >> .config
+          echo "CONFIG_MMU=y" >> .config
+          # 验证配置
+          grep -E "CONFIG_ANDROID_BINDER|CONFIG_PROC_FS|CONFIG_SYSFS|CONFIG_MMU" .config
           # 准备模块编译环境
-          make modules_prepare
-          # 检查配置是否生效
-          grep CONFIG_ANDROID_BINDER_IPC .config
+          make modules_prepare V=1
       
-      - name: Build driver
+      - name: Build driver with debug
         run: |
           cd linux
-          # 编译时显示详细输出，便于调试
-          make V=1 drivers/android/binder.ko -j$(nproc)
+          # 单独编译 binder 驱动，启用详细输出
+          make -d drivers/android/binder.ko V=1 -j$(nproc) || \
+          (echo "Build failed, showing last 500 lines of output" && \
+           tail -n 500 Makefile && \
+           exit 1)
       
       - name: Check build result
         run: |
           if [ -f "linux/drivers/android/binder.ko" ]; then
             echo "Build successful"
             ls -l linux/drivers/android/binder.ko
+            # 检查模块信息
+            modinfo linux/drivers/android/binder.ko || true
           else
             echo "Build failed - binder.ko not found"
             exit 1
           fi
       
       - name: Upload artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: binder-module
