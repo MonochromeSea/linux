@@ -8,14 +8,14 @@ on:
   pull_request:
     paths:
       - 'drivers/android/**'
-  workflow_dispatch:  # 允许手动触发
+  workflow_dispatch:
 
 jobs:
   compile:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        kernel_version: ['6.12']  # 可以添加多个版本
+        kernel_version: ['6.12']
 
     steps:
       - name: Checkout kernel source
@@ -32,26 +32,26 @@ jobs:
 
       - name: Prepare kernel configuration
         run: |
-          # 使用默认配置
           make defconfig
-          
-          # 启用 binder 相关配置
           scripts/config --enable CONFIG_ANDROID
           scripts/config --enable CONFIG_ANDROID_BINDER_IPC
           scripts/config --enable CONFIG_ANDROID_BINDERFS
           scripts/config --enable CONFIG_ANDROID_BINDER_IPC_SELFTEST
 
-      - name: Build kernel modules
+      - name: Build kernel preparation
+        run: |
+          # 先编译内核基础部分，生成必要的工具和文件
+          make prepare
+          make scripts
+
+      - name: Build binder modules
         run: |
           # 编译 binder 相关模块
           make M=drivers/android -j$(nproc)
 
       - name: Verify build output
         run: |
-          # 检查编译结果
           ls -l drivers/android/*.ko
-          
-          # 输出模块信息
           for ko in drivers/android/*.ko; do
             modinfo $ko
           done
