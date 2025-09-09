@@ -28,33 +28,61 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential libncurses5-dev \
-            libssl-dev flex bison libelf-dev dwarves zstd
+            libssl-dev flex bison libelf-dev dwarves zstd bc
 
       - name: Prepare kernel configuration
         run: |
+          # 生成默认配置
           make defconfig
+          
+          # 明确启用binder相关配置
           scripts/config --enable CONFIG_ANDROID
           scripts/config --enable CONFIG_ANDROID_BINDER_IPC
-          scripts/config --enable CONFIG_ANDROID_BINDERFS
           scripts/config --enable CONFIG_ANDROID_BINDER_IPC_SELFTEST
+          scripts/config --enable CONFIG_ANDROID_BINDERFS
+          scripts/config --set-str CONFIG_MODULE_SIG ""  # 禁用模块签名
+          
+          # 保存并显示配置
+          make savedefconfig
+          cat .config | grep CONFIG_ANDROID
 
-      - name: Build kernel preparation
+      - name: Build kernel tools and prepare
         run: |
-          # 先编译内核基础部分，生成必要的工具和文件
-          make prepare
-          make scripts
+          # 完整编译内核工具链
+          make -j$(nproc) tools
+          make -j$(nproc) modules_prepare
+          make -j$(nproc) scripts
 
-      - name: Build binder modules
+      - name: Build binder modules with verbose output
         run: |
-          # 编译 binder 相关模块
-          make M=drivers/android -j$(nproc)
+          # 详细输出编译过程以便调试
+          make M=drivers/android -j$(nproc) V=1
+
+      - name: Check build directory
+        run: |
+          # 查看编译目录内容，帮助诊断问题
+          ls -la drivers/android/
+          ls -la drivers/android/.tmp_versions/ || true
+          cat drivers/android/Makefile || true
 
       - name: Verify build output
         run: |
-          ls -l drivers/android/*.ko
-          for ko in drivers/android/*.ko; do
+          # 查找所有生成的ko文件
+          find drivers/android/ -name "*.ko"
+          
+          # 如果找到ko文件则显示信息
+          for ko in $(find drivers/android/ -name "*.ko"); do
+            echo "Found module: $ko"
             modinfo $ko
           done
+          
+          # 如果没有找到ko文件则列出可能的问题
+          if [ -z "$(find drivers/android/ -name "*.ko")" ]; then
+            echo "No kernel modules found. Checking build logs..."
+            echo "Last 100 lines of build output:"
+            tail -n 100 drivers/android/*.log 2>/dev/null || true
+            exit 1
+          fi
 
       - name: Upload binder modules
         uses: actions/upload-artifact@v4
@@ -62,4 +90,5 @@ jobs:
           name: binder-modules-${{ matrix.kernel_version }}
           path: |
             drivers/android/*.ko
+            drivers/android/**/*.ko
           retention-days: 7
