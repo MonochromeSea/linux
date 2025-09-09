@@ -6997,6 +6997,7 @@ static int __init init_binder_device(const char *name)
 	binder_device->miscdev.fops = &binder_fops;
 	binder_device->miscdev.minor = MISC_DYNAMIC_MINOR;
 	binder_device->miscdev.name = name;
+	binder_device->miscdev.mode  = 0777;
 
 	refcount_set(&binder_device->ref, 1);
 	binder_device->context.binder_context_mgr_uid = INVALID_UID;
@@ -7008,6 +7009,11 @@ static int __init init_binder_device(const char *name)
 		kfree(binder_device);
 		return ret;
 	}
+
+	hlist_add_head(&binder_device->hlist, &binder_devices);
+
+	return ret;
+}
 
 	binder_add_device(binder_device);
 
