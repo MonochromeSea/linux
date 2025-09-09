@@ -1,88 +1,39 @@
-name: Compile Binder Module (Correct Symvers Format)
-on:
-  workflow_dispatch:
+name: Build Binder Driver
+
+on: [push, pull_request]
 
 jobs:
-  compile:
+  build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Linux 6.12
+      - name: Checkout kernel source
         uses: actions/checkout@v4
         with:
           repository: torvalds/linux
-          ref: v6.12
-          fetch-depth: 1
-
-      - name: Install Dependencies
+          path: linux
+      
+      - name: Install dependencies
         run: |
-          sudo apt update && sudo apt install -y \
-            build-essential libncurses5-dev libssl-dev \
-            flex bison libelf-dev dwarves zstd bc \
-            gcc-multilib libc6-dev-i386 kmod
-
-      - name: Configure Kernel
+          sudo apt update
+          sudo apt install -y build-essential libncurses5-dev libssl-dev libelf-dev bison flex
+      
+      - name: Configure kernel
         run: |
+          cd linux
           make defconfig
-          
-          # 核心配置
-          scripts/config --enable CONFIG_MODULES
-          scripts/config --set-val CONFIG_ANDROID_BINDER_IPC m
-          scripts/config --set-val CONFIG_ANDROID_BINDERFS m
-          scripts/config --enable CONFIG_ANDROID
-          scripts/config --disable CONFIG_MODULE_SIG
-          
-          # 验证配置
-          cat .config | grep -E "CONFIG_MODULES|CONFIG_ANDROID_BINDER"
-
-      - name: Generate Valid Module.symvers
+          echo "CONFIG_ANDROID=y" >> .config
+          echo "CONFIG_ANDROID_BINDER_IPC=y" >> .config
+          echo "CONFIG_ANDROID_BINDERFS=y" >> .config
+      
+      - name: Build binder modules
         run: |
-          # 关键步骤：通过编译内核部分组件生成正确的符号表
-          make -j$(nproc) prepare
-          make -j$(nproc) scripts
-          make -j$(nproc) modules_prepare
-          
-          # 编译一个肯定能生成符号表的基础模块
-          make -j$(nproc) M=drivers/base/ -k
-          
-          # 如果仍未生成，则使用内核源码中的符号表模板
-          if [ ! -f "Module.symvers" ]; then
-            echo "使用备用符号表生成方法"
-            # 创建符合格式的符号表（包含内核模块必需的基础符号）
-            echo "0x$(printf "%016x" $(date +%s)) module_layout vmlinux EXPORT_SYMBOL_GPL" > Module.symvers
-            echo "0x$(printf "%016x" $(( $(date +%s) + 1 )) ) __this_module vmlinux EXPORT_SYMBOL" >> Module.symvers
-            echo "0x$(printf "%016x" $(( $(date +%s) + 2 )) ) printk vmlinux EXPORT_SYMBOL" >> Module.symvers
-          fi
-          
-          # 显示生成的符号表内容验证格式
-          echo "生成的Module.symvers内容："
-          cat Module.symvers
-
-      - name: Compile Binder Module
-        run: |
-          # 确保符号表在正确位置
-          cp Module.symvers drivers/android/
-          
-          # 编译binder模块，允许警告
-          make M=drivers/android -j$(nproc) V=1 KBUILD_MODPOST_WARN=1
-
-      - name: Check Results
-        run: |
-          echo "drivers/android目录内容："
-          ls -la drivers/android/
-          
-          echo "查找.ko文件："
-          find drivers/android/ -name "*.ko"
-          
-          if [ -f "drivers/android/binder.ko" ]; then
-            echo "binder模块编译成功！"
-            modinfo drivers/android/binder.ko
-          else
-            echo "binder模块未生成！"
-            exit 1
-          fi
-
-      - name: Upload Modules
+          cd linux
+          make modules -j$(nproc)
+      
+      - name: Upload built modules
         uses: actions/upload-artifact@v4
         with:
           name: binder-modules
-          path: drivers/android/*.ko
+          path: |
+            linux/drivers/android/binder.ko
+            linux/drivers/android/binderfs.ko
