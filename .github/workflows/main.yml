@@ -1,0 +1,42 @@
+name: Build Binder Driver
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential libncurses5-dev \
+          gcc-multilib flex bison openssl libssl-dev dkms \
+          libelf-dev libudev-dev libpci-dev libiberty-dev autoconf
+
+    - name: Clone Linux kernel source
+      run: |
+        git clone --depth 1 --branch v6.12 https://github.com/torvalds/linux.git
+        cd linux
+
+    - name: Configure kernel
+      run: |
+        cd linux
+        make defconfig
+        scripts/config --enable CONFIG_ANDROID_BINDER_IPC
+        scripts/config --set-str CONFIG_ANDROID_BINDER_IPC "m"
+        scripts/config --enable CONFIG_ANDROID_BINDERFS
+        make modules_prepare
+
+    - name: Build Binder driver
+      run: |
+        cd linux
+        make drivers/android/binder.ko -j$(nproc)
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: binder-module
+        path: linux/drivers/android/binder.ko
